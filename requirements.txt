@@ -1,0 +1,9 @@
+streamlit>=1.31.1
+pandas>=2.2.0
+numpy>=1.26.3
+plotly>=5.18.0
+ta>=0.11.0
+python-dotenv>=1.0.1
+dhanhq>=2.0.2
+nsepython>=2.97
+requests>=2.31.0
