@@ -731,8 +731,8 @@ def create_advanced_chart(df, ticker, ltp, show_prev_close, show_emas=True):
     return fig
 
 # Main App
-st.title("📱 Live Options Premium Tracker")
-st.markdown("*Professional-grade mobile trading tool*")
+st.title("📱 Stock-Options Straddle App")
+st.markdown("*Web App for tracking straddle premiums for FnO stocks on NSE*")
 
 # Sidebar for settings
 with st.sidebar:
@@ -899,6 +899,6 @@ if submitted:
 # Footer
 st.markdown("""
 <div style='text-align: center; color: #666; font-size: 0.9em; margin: 2rem 0;'>
-🛠️ Built with Streamlit | 📊 Real-time Options Data | 📱 Mobile-First Design
+🛠️ Built with Streamlit | 📊 Real-time Options Tracking | 📱 An App by Pappupedia
 </div>
 """, unsafe_allow_html=True) 
