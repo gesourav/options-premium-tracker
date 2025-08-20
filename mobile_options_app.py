@@ -231,46 +231,14 @@ def get_option_chain_strikes(ticker, use_real_data=True):
                         real_data['strikes'] = valid_strikes
                         real_data['atm_strike'] = min(valid_strikes, key=lambda x: abs(x - current_price))
                         return real_data
-                    else:
-                        st.warning(f"⚠️ API returned invalid strikes for {ticker}. Using demo data.")
-                else:
-                    st.warning(f"⚠️ Could not fetch real data for {ticker}. Using demo data.")
-            else:
-                st.warning("⚠️ Dhan API not available. Using demo data.")
         
-        # Fallback demo data (only if real API fails) - Use more realistic current prices
-        if ticker == "RELIANCE":
-            current_price = 1380.4  
-            base_strikes = [float(x) for x in range(1300, 1461, 10)]
-        elif ticker == "HDFCBANK":
-            current_price = 1650
-            base_strikes = list(range(1500, 1801, 25))
-        elif ticker == "TATAMOTORS":
-            current_price = 700  # Updated to match current levels
-            base_strikes = list(range(600, 801, 25))
-        elif ticker in ["TCS", "INFY"]:
-            current_price = 4200 if ticker == "TCS" else 1800
-            base_strikes = list(range(3800, 4601, 50)) if ticker == "TCS" else list(range(1600, 2001, 25))
-        elif ticker in ["SBIN", "ICICIBANK"]:
-            current_price = 820 if ticker == "SBIN" else 1350
-            base_strikes = list(range(700, 901, 25)) if ticker == "SBIN" else list(range(1200, 1501, 25))
-        elif ticker == "BHARTIARTL":
-            current_price = 1650
-            base_strikes = list(range(1500, 1801, 25))
-        elif ticker == "ITC":
-            current_price = 475
-            base_strikes = list(range(400, 551, 25))
+        # If we couldn't get real data, show market closed message
+        now = datetime.now()
+        if now.weekday() >= 5:  # Weekend
+            st.error("Market is closed. NSE operates Monday-Friday. Please try during market days.")
         else:
-            # Generic fallback for any other ticker
-            current_price = 1000
-            base_strikes = list(range(800, 1201, 25))
-        
-        return {
-            "current_price": current_price,
-            "strikes": base_strikes,
-            "atm_strike": min(base_strikes, key=lambda x: abs(x - current_price)),
-            "is_demo": True
-        }
+            st.error("Data is not available unless market opens. Please try this app during market hours (9:15 AM - 11:59 PM IST) on market days.")
+        return None
         
     except Exception as e:
         st.error(f"Error fetching option chain for {ticker}: {e}")
