@@ -714,8 +714,8 @@ def create_static_chart(df, ticker, ltp, show_prev_close, show_emas=True):
     return fig
 
 # Main App
-st.title("📱 Stock-Options Straddle App")
-st.markdown("*Web App for tracking straddle premiums for FnO stocks on NSE*")
+st.title("📱 Options Straddle App")
+st.markdown("*Web App for tracking straddle premiums for FnO stocks / Major Indexes on NSE*")
 
 # Sidebar for settings
 with st.sidebar:
@@ -726,7 +726,7 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown("**📊 About**")
-    st.markdown("This app tracks options straddle premiums in real-time, perfect for mobile trading.")
+    st.markdown("This app tracks options straddle premiums in real-time, for mobile trading.")
     
     # Show F&O stocks count
     try:
