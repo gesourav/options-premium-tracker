@@ -70,14 +70,28 @@ def get_fno_stocks():
         # Fallback to common stocks if API fails
         return ["TATAMOTORS", "RELIANCE", "HDFCBANK", "ICICIBANK", "SBIN", "TCS", "INFY", "ITC", "HINDUNILVR", "KOTAKBANK"]
 
+def get_index_security_id(ticker):
+    """Get hardcoded security IDs for indices from notebook"""
+    index_security_ids = {
+        "NIFTY": 13,
+        "BANKNIFTY": 25,
+        "FINNIFTY": 27,
+        "MIDCPNIFTY": 442
+    }
+    return index_security_ids.get(ticker)
+
 def fetch_ticker_secid(ticker):
     """Get security ID for a ticker from Dhan master file"""
     try:
-        if ticker in ("BANKNIFTY", "NIFTY", "FINNIFTY", "MIDCPNIFTY"):
-            exchange, segment = "NSE", "INDEX"
-        else:
-            exchange, segment = "NSE", "EQUITY"
+        # Define index list
+        INDEX_SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
+        
+        # For indices, return hardcoded security ID
+        if ticker in INDEX_SYMBOLS:
+            return get_index_security_id(ticker)
 
+        # For stocks, use existing logic
+        exchange, segment = "NSE", "EQUITY"
         all_mstr = pd.read_csv("https://images.dhan.co/api-data/api-scrip-master.csv")
         filter_df = all_mstr[
             (all_mstr["SEM_TRADING_SYMBOL"] == ticker) &
@@ -128,6 +142,10 @@ def get_real_option_chain_data(ticker, _dhan_client):
         if not _dhan_client:
             return None
             
+        # Determine if index or stock
+        INDEX_SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
+        is_index = ticker in INDEX_SYMBOLS
+            
         # Get security ID
         secid = fetch_ticker_secid(ticker)
         if not secid:
@@ -158,7 +176,7 @@ def get_real_option_chain_data(ticker, _dhan_client):
         
         payload = {
             "UnderlyingScrip": secid,
-            "UnderlyingSeg": "NSE_FNO",
+            "UnderlyingSeg": "IDX_I" if is_index else "NSE_FNO",  # Use IDX_I for indices
             "Expiry": expiry,
         }
         
@@ -290,7 +308,12 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
     """Fetch real options data using exact notebook logic"""
     try:
         if not _dhan_client:
-            return create_demo_data(ticker, ltp, agg_tick)
+            st.error("❌ Dhan client not initialized")
+            return None
+            
+        # Determine if index or stock
+        INDEX_SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
+        is_index = ticker in INDEX_SYMBOLS
             
         # EXACT notebook logic - use Kite instruments file
         all_mstr_expiry = pd.read_csv("https://api.kite.trade/instruments")
@@ -304,12 +327,15 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
         # Find CE and PE instruments for the strike
         if findExpirydf.empty:
             st.error(f"❌ No options data found for {ticker} in NFO segment")
-            return create_demo_data(ticker, ltp, agg_tick)
+            return None
         
         # Get available strikes around the requested strike
         nearest_expiry = findExpirydf["expiry"].min()
         available_strikes = sorted(findExpirydf[findExpirydf["expiry"] == nearest_expiry]["strike"].unique())
-        nearby_strikes = [s for s in available_strikes if abs(s - ltp) <= 200]  # Within ±200 of requested strike
+        
+        # Use wider range for indices
+        strike_range = 500 if is_index else 200
+        nearby_strikes = [s for s in available_strikes if abs(s - ltp) <= strike_range]
         
         instruments = findExpirydf[
             (findExpirydf["expiry"] == nearest_expiry)
@@ -328,9 +354,11 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
                 if len(instruments) == 2:
                     ltp = closest_strike  # Update the strike price
                 else:
-                    return create_demo_data(ticker, ltp, agg_tick)
+                    st.error(f"❌ Could not find both CE and PE instruments for {ticker}")
+                    return None
             else:
-                return create_demo_data(ticker, ltp, agg_tick)
+                st.error(f"❌ No nearby strikes found for {ticker}")
+                return None
         
         # Get current and previous trading day (same as notebook)
         today = datetime.now().date()
@@ -351,7 +379,7 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
                 livefeed = _dhan_client.intraday_minute_data(
                     security_id=str(secid),
                     exchange_segment="NSE_FNO",
-                    instrument_type="OPTSTK",
+                    instrument_type="OPTIDX" if is_index else "OPTSTK",
                     from_date=from_date,
                     to_date=to_date
                 )
@@ -361,7 +389,7 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
                     livefeed = _dhan_client.intraday_minute_data(
                         security_id=str(secid),
                         exchange_segment="NSE_FNO",
-                        instrument_type="OPTSTK"
+                        instrument_type="OPTIDX" if is_index else "OPTSTK"
                     )
                 else:
                     raise e
@@ -422,7 +450,8 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
                 df_pe = df.copy()
         
         if df_ce is None or df_pe is None:
-            return create_demo_data(ticker, ltp, agg_tick)
+            st.error(f"❌ Could not get both CE and PE data for {ticker}")
+            return None
         
         # EXACT notebook combination logic
         df_combined = (
@@ -454,7 +483,8 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
         df_combined = df_combined[df_combined["Timestamp"] >= to_date]
         
         if df_combined.empty:
-            return create_demo_data(ticker, ltp, agg_tick)
+            st.error(f"❌ No data available for current day for {ticker}")
+            return None
         
         # Calculate combined straddle values (exact notebook logic)
         df_combined["combined_open"] = df_combined["ce_open"] + df_combined["pe_open"]
@@ -509,109 +539,8 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
         return df_resampled
         
     except Exception as e:
-        return create_demo_data(ticker, ltp, agg_tick)
-
-def create_demo_data(ticker, ltp, agg_tick):
-    """Enhanced demo data generator with realistic option pricing"""
-    # Market hours
-    now = datetime.now(pytz.timezone('Asia/Kolkata'))
-    start_time = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    end_time = now.replace(hour=15, minute=30, second=0, microsecond=0)
-    
-    timestamps = pd.date_range(start=start_time, end=end_time, freq='1min')
-    
-    # Get current price from option chain data
-    option_data = get_option_chain_strikes(ticker, False)
-    if option_data:
-        current_price = option_data["current_price"]
-        atm_strike = option_data["atm_strike"]
-    else:
-        current_price = ltp
-        atm_strike = ltp
-    
-    # More realistic options pricing based on moneyness
-    np.random.seed(hash(ticker + str(ltp)) % 2**32)  # Consistent per ticker+strike
-    
-    # Calculate moneyness (how far strike is from current price)
-    moneyness = (ltp - current_price) / current_price
-    
-    # Option Greeks simulation
-    time_to_expiry = 7  # days
-    volatility = 0.25
-    
-    # More realistic CE/PE premiums based on moneyness
-    if moneyness > 0.05:  # OTM Call
-        ce_base = max(ltp * 0.02, 2)  # Low premium for OTM
-        pe_base = max(current_price * 0.08, 15)  # High premium for ITM put
-    elif moneyness < -0.05:  # OTM Put  
-        ce_base = max(current_price * 0.08, 15)  # High premium for ITM call
-        pe_base = max(ltp * 0.02, 2)  # Low premium for OTM put
-    else:  # ATM
-        ce_base = max(ltp * 0.06, 8)
-        pe_base = max(ltp * 0.05, 6)
-    
-    # Add market-like movements with correlation to underlying
-    underlying_changes = np.random.normal(0, 0.8, len(timestamps))
-    
-    # CE moves positively with underlying, PE negatively
-    ce_changes = np.cumsum(underlying_changes * 0.6 + np.random.normal(0, 0.4, len(timestamps)))
-    pe_changes = np.cumsum(-underlying_changes * 0.5 + np.random.normal(0, 0.3, len(timestamps)))
-    
-    ce_prices = np.maximum(ce_base + ce_changes, 0.5)
-    pe_prices = np.maximum(pe_base + pe_changes, 0.5)
-    
-    combined_prices = ce_prices + pe_prices
-    
-    # Create realistic OHLC
-    df = pd.DataFrame({
-        'timestamp': timestamps,
-        'combined_close': combined_prices,
-        'ce_close': ce_prices,
-        'pe_close': pe_prices,
-        'volume': np.random.randint(20, 200, len(timestamps)),
-        'current_price': current_price,
-        'strike': ltp,
-        'moneyness': moneyness
-    })
-    
-    # Add volatility for OHLC with time decay effect
-    volatility_factor = np.random.uniform(0.3, 1.2, len(df))
-    df['combined_open'] = df['combined_close'].shift(1).fillna(df['combined_close'].iloc[0])
-    df['combined_high'] = df['combined_close'] + volatility_factor
-    df['combined_low'] = df['combined_close'] - volatility_factor
-    
-    # Ensure OHLC logic
-    df['combined_high'] = np.maximum(
-        df[['combined_open', 'combined_close']].max(axis=1),
-        df['combined_high']
-    )
-    df['combined_low'] = np.minimum(
-        df[['combined_open', 'combined_close']].min(axis=1),
-        df['combined_low']
-    )
-    
-    df.set_index('timestamp', inplace=True)
-    
-    # Resample
-    freq_map = {"1T": "1min", "3T": "3min", "5T": "5min", "15T": "15min"}
-    df_agg = df.resample(freq_map.get(agg_tick, "3min")).agg({
-        'combined_open': 'first',
-        'combined_high': 'max',
-        'combined_low': 'min',
-        'combined_close': 'last',
-        'ce_close': 'last',
-        'pe_close': 'last',
-        'volume': 'sum',
-        'current_price': 'last',
-        'strike': 'last',
-        'moneyness': 'last'
-    }).dropna()
-    
-    # Add EMAs
-    df_agg['ema9'] = EMAIndicator(close=df_agg['combined_close'], window=9).ema_indicator()
-    df_agg['ema21'] = EMAIndicator(close=df_agg['combined_close'], window=21).ema_indicator()
-    
-    return df_agg
+        st.error(f"❌ Error fetching real options data: {str(e)}")
+        return None
 
 def create_advanced_chart(df, ticker, ltp, show_prev_close, show_emas=True):
     """Create production-quality chart"""
@@ -806,11 +735,13 @@ with st.sidebar:
     except:
         pass
 
-# Get F&O stocks list
+# Get F&O stocks list and add indices
+INDEX_SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
 fno_stocks = get_fno_stocks()
 
-# Use all F&O stocks directly (remove search functionality)
-filtered_stocks = fno_stocks
+# Add indices at the beginning of the list
+all_instruments = INDEX_SYMBOLS + fno_stocks
+filtered_stocks = all_instruments
 
 # Ticker selection
 ticker_col1, ticker_col2 = st.columns([2, 1])
@@ -935,10 +866,11 @@ if submitted:
             if dhan_client:
                 df_data = get_real_options_data(current_ticker, ltp, agg_tick, dhan_client)
                 if df_data is None:
-                    st.error("❌ Could not fetch data. Please check your inputs.")
+                    st.error("❌ Could not fetch data. Please check your inputs and try again.")
                     st.stop()
             else:
-                df_data = create_demo_data(current_ticker, ltp, agg_tick)
+                st.error("❌ Dhan client not initialized. Please check your API credentials.")
+                st.stop()
             
             # Create static chart instead of plotly chart
             fig = create_static_chart(df_data, current_ticker, ltp, show_prev_close, show_emas)
