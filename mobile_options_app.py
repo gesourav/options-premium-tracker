@@ -7,6 +7,11 @@ import os
 from ta.trend import EMAIndicator
 from nsepython import fnolist
 import requests
+import matplotlib.pyplot as plt
+from matplotlib.dates import DateFormatter
+import mplfinance as mpf
+import matplotlib.dates
+import pytz
 
 # For production:
 from dhanhq import dhanhq
@@ -541,7 +546,7 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
 def create_demo_data(ticker, ltp, agg_tick):
     """Enhanced demo data generator with realistic option pricing"""
     # Market hours
-    now = datetime.now()
+    now = datetime.now(pytz.timezone('Asia/Kolkata'))
     start_time = now.replace(hour=9, minute=15, second=0, microsecond=0)
     end_time = now.replace(hour=15, minute=30, second=0, microsecond=0)
     
@@ -730,6 +735,87 @@ def create_advanced_chart(df, ticker, ltp, show_prev_close, show_emas=True):
     
     return fig
 
+def create_static_chart(df, ticker, ltp, show_prev_close, show_emas=True):
+    """Create static matplotlib chart that mirrors the original Plotly version"""
+    # Debug print to see timestamps
+    print("Timestamps in data:", df.index[0], "to", df.index[-1])
+    
+    # Create figure and axis
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Convert timestamps while preserving timezone
+    dates = df.index.map(lambda x: matplotlib.dates.date2num(x.tz_localize(None)))
+    
+    # Plot candlesticks
+    width = 0.8 * (dates[1] - dates[0]) if len(dates) > 1 else 0.0002  # Dynamic width based on time difference
+    
+    up = df[df['combined_close'] >= df['combined_open']]
+    down = df[df['combined_close'] < df['combined_open']]
+    
+    # Plot up candlesticks
+    for i, idx in enumerate(up.index):
+        date = dates[df.index.get_loc(idx)]
+        # Body
+        body_bottom = min(up.loc[idx, 'combined_open'], up.loc[idx, 'combined_close'])
+        body_height = abs(up.loc[idx, 'combined_close'] - up.loc[idx, 'combined_open'])
+        rect = plt.Rectangle((date - width/2, body_bottom), width, body_height,
+                           fill=True, color='#26a69a')
+        ax.add_patch(rect)
+        # Wick
+        ax.plot([date, date], 
+                [up.loc[idx, 'combined_low'], up.loc[idx, 'combined_high']], 
+                color='#26a69a', linewidth=1)
+    
+    # Plot down candlesticks
+    for i, idx in enumerate(down.index):
+        date = dates[df.index.get_loc(idx)]
+        # Body
+        body_bottom = min(down.loc[idx, 'combined_open'], down.loc[idx, 'combined_close'])
+        body_height = abs(down.loc[idx, 'combined_close'] - down.loc[idx, 'combined_open'])  # Fixed height calculation
+        rect = plt.Rectangle((date - width/2, body_bottom), width, body_height,
+                           fill=True, color='#ef5350')
+        ax.add_patch(rect)
+        # Wick
+        ax.plot([date, date], 
+                [down.loc[idx, 'combined_low'], down.loc[idx, 'combined_high']], 
+                color='#ef5350', linewidth=1)
+    
+    # EMAs
+    if show_emas:
+        ax.plot(dates, df['ema9'], label='EMA 9', color='#2196f3', linewidth=2)
+        ax.plot(dates, df['ema21'], label='EMA 21', color='#ff9800', linewidth=2)
+        ax.legend()
+    
+    # Previous close line
+    if show_prev_close and 'prev_day_close' in df.columns:
+        prev_close = df['prev_day_close'].iloc[0]
+        if not pd.isna(prev_close):
+            ax.axhline(y=prev_close, color='gray', linestyle='--', alpha=0.5)
+            ax.text(dates[-1], prev_close, f'Prev Close: ₹{prev_close:.1f}', 
+                    verticalalignment='bottom', horizontalalignment='right')
+    
+    # Customize the plot
+    plt.title(f"{ticker} ₹{ltp} Straddle", pad=20, fontsize=14)
+    plt.xlabel('Time')
+    plt.ylabel('Premium (₹)')
+    
+    # Format x-axis
+    ax.xaxis.set_major_formatter(DateFormatter('%H:%M'))
+    plt.xticks(rotation=45)
+    
+    # Set y-axis limits with some padding
+    ymin = df['combined_low'].min() * 0.995
+    ymax = df['combined_high'].max() * 1.005
+    plt.ylim(ymin, ymax)
+    
+    # Grid
+    ax.grid(True, alpha=0.2)
+    
+    # Adjust layout
+    plt.tight_layout()
+    
+    return fig
+
 # Main App
 st.title("📱 Stock-Options Straddle App")
 st.markdown("*Web App for tracking straddle premiums for FnO stocks on NSE*")
@@ -886,9 +972,9 @@ if submitted:
             else:
                 df_data = create_demo_data(current_ticker, ltp, agg_tick)
             
-            # Create chart
-            chart = create_advanced_chart(df_data, current_ticker, ltp, show_prev_close, show_emas)
-            st.plotly_chart(chart, use_container_width=True)
+            # Create static chart instead of plotly chart
+            fig = create_static_chart(df_data, current_ticker, ltp, show_prev_close, show_emas)
+            st.pyplot(fig)
             
         except Exception as e:
             st.error(f"❌ Error: {str(e)}")

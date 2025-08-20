@@ -47,6 +47,7 @@ pip install -r requirements_streamlit.txt
 5. Run the app:
 ```bash
 streamlit run mobile_options_app.py
+pkill -f streamlit
 ```
 
 ## 📊 Usage
@@ -61,7 +62,3 @@ streamlit run mobile_options_app.py
 - Never commit your API credentials
 - Use environment variables or Streamlit secrets
 - Keep your API keys secure
-
-## 📝 License
-
-MIT License
