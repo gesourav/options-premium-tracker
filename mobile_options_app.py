@@ -29,10 +29,12 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Mobile CSS
+# Mobile CSS - Fixed for Streamlit Cloud deployment
 st.markdown("""
 <style>
-    .main > div { padding-top: 1rem; }
+    .main > div { 
+        padding-top: 1rem; 
+    }
     .stButton > button { 
         width: 100%; 
         height: 3rem; 
@@ -50,17 +52,29 @@ st.markdown("""
         margin: 0.5rem 0;
     }
     @media (max-width: 768px) {
-        .main .block-container { padding-left: 1rem; padding-right: 1rem; }
+        .main .block-container { 
+            padding-left: 1rem; 
+            padding-right: 1rem; 
+        }
     }
-    /* Style for recommendation table */
     .recommendation-table {
         font-size: 0.9em;
     }
-    .strong-sell { background-color: #d4edda !important; }
-    .sell { background-color: #f8f9fa !important; }
-    .consider { background-color: #fff3cd !important; }
-    .weak { background-color: #f8d7da !important; }
-    .avoid { background-color: #f5c6cb !important; }
+    .strong-sell { 
+        background-color: #d4edda;
+    }
+    .sell { 
+        background-color: #f8f9fa;
+    }
+    .consider { 
+        background-color: #fff3cd;
+    }
+    .weak { 
+        background-color: #f8d7da;
+    }
+    .avoid { 
+        background-color: #f5c6cb;
+    }
 </style>
 """, unsafe_allow_html=True)
 
