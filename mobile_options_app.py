@@ -21,23 +21,18 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Health check for Streamlit Cloud
-try:
-    st.set_page_config(
-        page_title="Options Premium Tracker",
-        page_icon="📱",
-        layout="wide",
-        initial_sidebar_state="collapsed"
-    )
-except Exception as e:
-    st.error(f"App initialization error: {e}")
+# Configure for mobile
+st.set_page_config(
+    page_title="Options Premium Tracker",
+    page_icon="📱",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-# Mobile CSS - Fixed for Streamlit Cloud deployment
+# Mobile CSS
 st.markdown("""
 <style>
-    .main > div { 
-        padding-top: 1rem; 
-    }
+    .main > div { padding-top: 1rem; }
     .stButton > button { 
         width: 100%; 
         height: 3rem; 
@@ -55,29 +50,17 @@ st.markdown("""
         margin: 0.5rem 0;
     }
     @media (max-width: 768px) {
-        .main .block-container { 
-            padding-left: 1rem; 
-            padding-right: 1rem; 
-        }
+        .main .block-container { padding-left: 1rem; padding-right: 1rem; }
     }
+    /* Style for recommendation table */
     .recommendation-table {
         font-size: 0.9em;
     }
-    .strong-sell { 
-        background-color: #d4edda;
-    }
-    .sell { 
-        background-color: #f8f9fa;
-    }
-    .consider { 
-        background-color: #fff3cd;
-    }
-    .weak { 
-        background-color: #f8d7da;
-    }
-    .avoid { 
-        background-color: #f5c6cb;
-    }
+    .strong-sell { background-color: #d4edda !important; }
+    .sell { background-color: #f8f9fa !important; }
+    .consider { background-color: #fff3cd !important; }
+    .weak { background-color: #f8d7da !important; }
+    .avoid { background-color: #f5c6cb !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -550,15 +533,9 @@ def fetch_ticker_secid(ticker):
         if ticker in INDEX_SYMBOLS:
             return get_index_security_id(ticker)
 
-        # For stocks, use existing logic with error handling
+        # For stocks, use existing logic
         exchange, segment = "NSE", "EQUITY"
-        
-        try:
-            all_mstr = pd.read_csv("https://images.dhan.co/api-data/api-scrip-master.csv", low_memory=False)
-        except Exception as e:
-            st.error(f"Failed to download master data: {e}")
-            return None
-            
+        all_mstr = pd.read_csv("https://images.dhan.co/api-data/api-scrip-master.csv")
         filter_df = all_mstr[
             (all_mstr["SEM_TRADING_SYMBOL"] == ticker) &
             (all_mstr["SEM_EXM_EXCH_ID"] == exchange) &
@@ -575,17 +552,13 @@ def fetch_ticker_secid(ticker):
 def get_next_expiry(ticker):
     """Get the next Thursday expiry for options"""
     try:
-        # Read from Kite instruments file with error handling
-        try:
-            all_mstr_expiry = pd.read_csv("https://api.kite.trade/instruments", low_memory=False)
-        except Exception as e:
-            st.error(f"Failed to download expiry data: {e}")
-            return None
-            
+        # Read from Kite instruments file
+        all_mstr_expiry = pd.read_csv("https://api.kite.trade/instruments")
+        
         findExpirydf = all_mstr_expiry[
             (all_mstr_expiry.exchange == "NFO") &
             (all_mstr_expiry.name == ticker) &
-            (all_mstr_expiry.segment == "NFO-OPT")
+            (all_mstr_expiry.segment == "NFO-OPT")  # Changed from instrument_type == "FUT"
         ].reset_index(drop=True)
         
         if findExpirydf.empty:
