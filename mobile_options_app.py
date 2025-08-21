@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -51,12 +52,454 @@ st.markdown("""
     @media (max-width: 768px) {
         .main .block-container { padding-left: 1rem; padding-right: 1rem; }
     }
+    /* Style for recommendation table */
+    .recommendation-table {
+        font-size: 0.9em;
+    }
+    .strong-sell { background-color: #d4edda !important; }
+    .sell { background-color: #f8f9fa !important; }
+    .consider { background-color: #fff3cd !important; }
+    .weak { background-color: #f8d7da !important; }
+    .avoid { background-color: #f5c6cb !important; }
 </style>
 """, unsafe_allow_html=True)
 
 # Initialize session state
 if 'use_demo_data' not in st.session_state:
     st.session_state.use_demo_data = True
+
+# === ENHANCED OPTION CHAIN FUNCTIONS ===
+
+def calculate_extrinsic_value(option_price, strike, underlying_price, option_type):
+    """Calculate extrinsic value of an option"""
+    if pd.isna(option_price) or option_price == 0:
+        return 0
+    
+    if option_type == 'CE':  # Call option
+        intrinsic_value = max(0, underlying_price - strike)
+    else:  # Put option (PE)
+        intrinsic_value = max(0, strike - underlying_price)
+    
+    extrinsic_value = option_price - intrinsic_value
+    return max(0, extrinsic_value)
+
+def calculate_advanced_greek_ratios(options_df, underlying_price, ivp=50, dte=30):
+    """
+    Calculate advanced Greek ratios and trading metrics for options selection
+    """
+    
+    # Make a copy to avoid modifying original
+    enhanced_df = options_df.copy()
+    
+    # IVP Environment Classification
+    if ivp >= 80:
+        iv_environment = "VERY_HIGH"
+        iv_factor = 1.5
+        vega_tolerance = 1.2
+    elif ivp >= 60:
+        iv_environment = "HIGH" 
+        iv_factor = 1.3
+        vega_tolerance = 1.0
+    elif ivp >= 40:
+        iv_environment = "MODERATE"
+        iv_factor = 1.1
+        vega_tolerance = 0.8
+    elif ivp >= 20:
+        iv_environment = "LOW"
+        iv_factor = 0.9
+        vega_tolerance = 0.6
+    else:
+        iv_environment = "VERY_LOW"
+        iv_factor = 0.7
+        vega_tolerance = 0.4
+    
+    # Add extrinsic value calculation
+    enhanced_df['extrinsic_value'] = enhanced_df.apply(
+        lambda row: calculate_extrinsic_value(
+            row['last_price'], row['strike'], underlying_price, row['type']
+        ), axis=1
+    ).round(2)
+    
+    # Calculate straddle prices by grouping strikes
+    straddle_df = enhanced_df.groupby('strike').agg({
+        'last_price': 'sum'
+    }).rename(columns={'last_price': 'straddle_price'}).round(0)
+    
+    # Merge straddle prices back
+    enhanced_df = enhanced_df.merge(straddle_df, on='strike', how='left')
+    
+    # === PRIMARY GREEK RATIOS ===
+    
+    # 1. Theta/Delta Ratio
+    enhanced_df['theta_delta_ratio'] = np.where(
+        enhanced_df['delta'].abs() > 0.01,
+        enhanced_df['theta'].abs() / enhanced_df['delta'].abs(),
+        np.nan
+    ).round(2)
+    
+    # 2. IVP-Adjusted Theta/Vega Ratio 
+    enhanced_df['theta_vega_ratio'] = np.where(
+        enhanced_df['vega'] > 0.1,
+        (enhanced_df['theta'].abs() / enhanced_df['vega']) * vega_tolerance,
+        np.nan
+    ).round(3)
+    
+    # 3. Gamma-Adjusted Delta Efficiency
+    annual_vol = 0.20
+    gamma_adjustment = enhanced_df['gamma'] * (underlying_price ** 2) * (annual_vol ** 2) / 365
+    enhanced_df['gamma_adj_efficiency'] = np.where(
+        enhanced_df['delta'].abs() > 0.01,
+        (enhanced_df['theta'].abs() - gamma_adjustment) / enhanced_df['delta'].abs(),
+        np.nan
+    ).round(2)
+    
+    # 4. IVP-Weighted Greek Efficiency Score
+    gamma_risk_factor = np.minimum(enhanced_df['gamma'] * 10, 0.5)
+    
+    enhanced_df['efficiency_score'] = (
+        enhanced_df['theta_delta_ratio'] * 
+        iv_factor * 
+        enhanced_df['theta_vega_ratio'].fillna(1) * 
+        (1 - gamma_risk_factor)
+    ).round(2)
+    
+    # 5. OTM Selling Attractiveness Score
+    def calculate_selling_score(row, ivp):
+        score = 0
+        
+        # Delta range scoring
+        abs_delta = abs(row['delta']) if not pd.isna(row['delta']) else 0
+        
+        if ivp >= 60:
+            optimal_delta_range = (0.12, 0.28)
+        else:
+            optimal_delta_range = (0.15, 0.25)
+        
+        if optimal_delta_range[0] <= abs_delta <= optimal_delta_range[1]:
+            score += 35
+        elif optimal_delta_range[0] - 0.05 <= abs_delta <= optimal_delta_range[1] + 0.05:
+            score += 25
+        elif abs_delta < optimal_delta_range[0]:
+            score += 15
+        
+        # Theta scoring
+        if not pd.isna(row['theta']) and row['theta'] < 0:
+            daily_theta = abs(row['theta'])
+            theta_threshold = 2.5 if ivp >= 60 else 3.0
+            
+            if daily_theta > theta_threshold * 1.2:
+                score += 30
+            elif daily_theta > theta_threshold:
+                score += 25
+            elif daily_theta > theta_threshold * 0.7:
+                score += 20
+            else:
+                score += 10
+        
+        # Vega scoring
+        if not pd.isna(row['vega']):
+            vega_threshold = 5 if ivp >= 60 else 3
+            
+            if row['vega'] < vega_threshold * 0.6:
+                score += 25
+            elif row['vega'] < vega_threshold:
+                score += 20
+            elif row['vega'] < vega_threshold * 1.5:
+                score += 15
+            else:
+                score += 5
+        
+        # Gamma scoring
+        if not pd.isna(row['gamma']):
+            if row['gamma'] < 0.002:
+                score += 10
+            elif row['gamma'] < 0.005:
+                score += 7
+            else:
+                score += 3
+        
+        return min(score, 100)
+    
+    enhanced_df['selling_score'] = enhanced_df.apply(
+        lambda row: calculate_selling_score(row, ivp), axis=1
+    )
+    
+    # 6. Expected Value Calculation
+    def calculate_expected_value(row, dte, ivp):
+        if pd.isna(row['last_price']) or pd.isna(row['theta']) or pd.isna(row['delta']) or row['last_price'] <= 0:
+            return np.nan
+        
+        # Probability ITM
+        prob_itm = abs(row['delta'])
+        
+        # IVP affects volatility expansion risk
+        vol_expansion_risk = 1.0
+        if ivp >= 80:
+            vol_expansion_risk = 0.8
+        elif ivp >= 60:
+            vol_expansion_risk = 0.9
+        elif ivp <= 20:
+            vol_expansion_risk = 1.3
+        elif ivp <= 40:
+            vol_expansion_risk = 1.1
+        
+        # Expected theta collection
+        theta_collection = abs(row['theta']) * dte * (1 - prob_itm) * vol_expansion_risk
+        
+        # Expected loss
+        avg_loss_factor = 0.25 if ivp >= 60 else 0.35
+        expected_loss = row['last_price'] * prob_itm * avg_loss_factor
+        
+        return theta_collection - expected_loss
+    
+    enhanced_df['expected_value'] = enhanced_df.apply(
+        lambda row: calculate_expected_value(row, dte, ivp), axis=1
+    ).round(2)
+    
+    # 7. Trade Recommendations with ITM Safety Filter
+    def get_recommendation(row, ivp):
+        if pd.isna(row['selling_score']) or pd.isna(row['efficiency_score']):
+            return "NO_DATA"
+        
+        # CRITICAL SAFETY CHECK: Never recommend selling ITM options
+        # ITM means abs(delta) > 0.5, which carries very high assignment risk
+        if pd.notna(row['delta']) and abs(row['delta']) > 0.5:
+            return "AVOID"  # ITM options are too risky to sell
+        
+        # Additional safety: Don't recommend if delta is too close to 0.5 (near ITM)
+        if pd.notna(row['delta']) and abs(row['delta']) > 0.45:
+            return "WEAK"  # Close to ITM, high risk
+        
+        # Adjust thresholds based on IVP for OTM options only
+        if ivp >= 70:
+            strong_threshold, sell_threshold = 70, 55
+        elif ivp >= 50:
+            strong_threshold, sell_threshold = 75, 60
+        else:
+            strong_threshold, sell_threshold = 80, 65
+        
+        if row['selling_score'] >= strong_threshold and row['efficiency_score'] >= 2.5:
+            return "STRONG_SELL"
+        elif row['selling_score'] >= sell_threshold and row['efficiency_score'] >= 1.8:
+            return "SELL"
+        elif row['selling_score'] >= 45 and row['efficiency_score'] >= 1.2:
+            return "CONSIDER"
+        elif row['selling_score'] >= 30:
+            return "WEAK"
+        else:
+            return "AVOID"
+    
+    enhanced_df['recommendation'] = enhanced_df.apply(
+        lambda row: get_recommendation(row, ivp), axis=1
+    )
+    
+    # Add metadata
+    enhanced_df['ivp_environment'] = iv_environment
+    enhanced_df['ivp_value'] = ivp
+    enhanced_df['dte'] = dte
+    
+    return enhanced_df
+
+def process_option_chain_for_recommendations(option_chain_data, underlying_price, ivp=50, dte=30):
+    """
+    Process raw option chain data from Dhan API into enhanced recommendation format
+    """
+    try:
+        flattened_data = []
+        
+        for strike, data in option_chain_data.items():
+            for option_type, option_data in data.items():
+                greeks = option_data.pop('greeks', {})
+                row = {
+                    'strike': float(strike),
+                    'type': option_type.upper(),
+                    **greeks,
+                    **option_data
+                }
+                flattened_data.append(row)
+        
+        # Create DataFrame
+        df = pd.DataFrame(flattened_data)
+        
+        # Rename columns to match our enhanced functions
+        df = df.rename(columns={
+            'underlying_last_price': 'underlying_price'
+        })
+        
+        # Add underlying price if not present
+        if 'underlying_price' not in df.columns:
+            df['underlying_price'] = underlying_price
+        
+        # Filter for strikes around ATM (±10 strikes only for better focus)
+        strikes = sorted(df['strike'].unique())
+        atm_strike = min(strikes, key=lambda x: abs(x - underlying_price))
+        
+        try:
+            atm_index = strikes.index(atm_strike)
+            start_idx = max(0, atm_index - 10)
+            end_idx = min(len(strikes), atm_index + 11)  # +11 to include ATM
+            selected_strikes = strikes[start_idx:end_idx]
+            reasonable_strikes = df[df['strike'].isin(selected_strikes)].copy()
+        except:
+            # Fallback to original method if ATM index lookup fails
+            reasonable_strikes = df[
+                (df['strike'] >= underlying_price * 0.9) & 
+                (df['strike'] <= underlying_price * 1.1)
+            ].copy()
+        
+        if reasonable_strikes.empty:
+            return None
+        
+        # Calculate enhanced metrics
+        enhanced_df = calculate_advanced_greek_ratios(reasonable_strikes, underlying_price, ivp, dte)
+        
+        return enhanced_df
+        
+    except Exception as e:
+        st.error(f"Error processing option chain data: {e}")
+        return None
+
+def display_recommendations_table(enhanced_df, underlying_price):
+    """Display enhanced recommendations table"""
+    
+    if enhanced_df is None or enhanced_df.empty:
+        st.warning("No option chain data available for recommendations.")
+        return
+    
+    st.subheader("📊 Option Selling Recommendations")
+    
+    # Create separate tables for calls and puts
+    calls_df = enhanced_df[enhanced_df['type'] == 'CE'].copy()
+    puts_df = enhanced_df[enhanced_df['type'] == 'PE'].copy()
+    
+    # Select key columns for display
+    display_columns = [
+        'strike', 'last_price', 'delta', 'theta', 'vega', 'gamma', 
+        'implied_volatility', 'extrinsic_value', 'straddle_price',
+        'theta_delta_ratio', 'theta_vega_ratio', 'efficiency_score', 
+        'selling_score', 'expected_value', 'recommendation'
+    ]
+    
+    # Format the data for better display
+    def format_display_df(df):
+        display_df = df[display_columns].copy()
+        
+        # Round and format columns for better readability and space efficiency
+        display_df['strike'] = display_df['strike'].astype(int)
+        display_df['last_price'] = display_df['last_price'].round(2)
+        display_df['delta'] = display_df['delta'].round(2)  # Reduced from 3 to 2 decimals
+        display_df['theta'] = display_df['theta'].round(1)
+        display_df['vega'] = display_df['vega'].round(1)
+        display_df['gamma'] = display_df['gamma'].round(3)  # Reduced from 4 to 3 decimals
+        display_df['implied_volatility'] = (display_df['implied_volatility']).round(2)
+        display_df['extrinsic_value'] = display_df['extrinsic_value'].round(2)
+        display_df['straddle_price'] = display_df['straddle_price'].astype(int)
+        display_df['theta_delta_ratio'] = display_df['theta_delta_ratio'].round(1)
+        display_df['theta_vega_ratio'] = display_df['theta_vega_ratio'].round(1)
+        display_df['efficiency_score'] = display_df['efficiency_score'].round(1)
+        display_df['selling_score'] = display_df['selling_score'].round(0).astype(int)
+        display_df['expected_value'] = display_df['expected_value'].round(1)
+
+        # Convert to string with proper formatting to avoid scientific notation
+        for col in ['last_price', 'delta', 'theta', 'vega', 'implied_volatility', 'extrinsic_value', 'theta_delta_ratio', 
+                'theta_vega_ratio', 'efficiency_score', 'expected_value']:
+            if col in display_df.columns:
+                display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "0.00")
+
+        for col in ['gamma']:
+            if col in display_df.columns:
+                display_df[col] = display_df[col].apply(lambda x: f"{x:.3f}" if pd.notna(x) else "0.000")
+        
+        # Rename columns for better readability with shorter names for mobile
+        display_df = display_df.rename(columns={
+            'strike': 'Strike',
+            'last_price': 'Price',
+            'delta': 'Δ',
+            'theta': 'Θ',
+            'vega': 'ν', 
+            'gamma': 'Γ',
+            'implied_volatility': 'IV',
+            'extrinsic_value': 'Extr',
+            'straddle_price': 'Strd',
+            'theta_delta_ratio': 'Θ/Δ',
+            'theta_vega_ratio': 'Θ/ν',
+            'efficiency_score': 'Eff',
+            'selling_score': 'Score',
+            'expected_value': 'ExpV',
+            'recommendation': 'Rec'
+        })
+        
+        return display_df
+    
+    # Display tables in columns
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**📈 CALL OPTIONS**")
+        if not calls_df.empty:
+            calls_display = format_display_df(calls_df)
+            
+            # Style the dataframe based on recommendations with better contrast
+            def style_recommendations(row):
+                rec = row['Rec']
+                if rec == 'STRONG_SELL':
+                    return ['background-color: #d4edda; color: #155724; font-weight: bold'] * len(row)
+                elif rec == 'SELL':
+                    return ['background-color: #cce5ff; color: #004085; font-weight: bold'] * len(row)
+                elif rec == 'CONSIDER':
+                    return ['background-color: #fff3cd; color: #856404; font-weight: bold'] * len(row)
+                elif rec == 'WEAK':
+                    return ['background-color: #f8d7da; color: #721c24; font-weight: bold'] * len(row)
+                else:
+                    return ['background-color: #f5c6cb; color: #721c24; font-weight: bold'] * len(row)
+            
+            styled_calls = calls_display.style.apply(style_recommendations, axis=1)
+            st.dataframe(styled_calls, use_container_width=True, height=400)
+        else:
+            st.info("No call options data available")
+    
+    with col2:
+        st.markdown("**📉 PUT OPTIONS**")
+        if not puts_df.empty:
+            puts_display = format_display_df(puts_df)
+            
+            # Use the same styling function for puts
+            def style_recommendations_puts(row):
+                rec = row['Rec']
+                if rec == 'STRONG_SELL':
+                    return ['background-color: #d4edda; color: #155724; font-weight: bold'] * len(row)
+                elif rec == 'SELL':
+                    return ['background-color: #cce5ff; color: #004085; font-weight: bold'] * len(row)
+                elif rec == 'CONSIDER':
+                    return ['background-color: #fff3cd; color: #856404; font-weight: bold'] * len(row)
+                elif rec == 'WEAK':
+                    return ['background-color: #f8d7da; color: #721c24; font-weight: bold'] * len(row)
+                else:
+                    return ['background-color: #f5c6cb; color: #721c24; font-weight: bold'] * len(row)
+            
+            styled_puts = puts_display.style.apply(style_recommendations_puts, axis=1)
+            st.dataframe(styled_puts, use_container_width=True, height=400)
+        else:
+            st.info("No put options data available")
+    
+    # Legend
+    st.markdown("""
+    **Legend:** 
+    🟢 STRONG_SELL | 🔵 SELL | 🟡 CONSIDER | 🔴 WEAK | ⚫ AVOID
+    
+    **Key Metrics:**
+    - **Θ/Δ**: Theta/Delta ratio (higher = better time decay efficiency)
+    - **Θ/ν**: Theta/Vega ratio (higher = lower volatility risk)  
+    - **Eff**: Composite Greek efficiency score
+    - **Score**: Overall selling attractiveness (0-100)
+    - **ExpV**: Risk-adjusted expected value
+    - **Extr**: Extrinsic value (time value component)
+    - **Strd**: Straddle price (Call + Put premium)
+    
+    **Note**: Showing ATM ± 10 strikes for optimal liquidity focus
+    """)
+
+# === EXISTING FUNCTIONS (UNCHANGED) ===
 
 @st.cache_data
 def get_fno_stocks():
@@ -714,8 +1157,8 @@ def create_static_chart(df, ticker, ltp, show_prev_close, show_emas=True):
     return fig
 
 # Main App
-st.title("📱 Options Straddle App")
-st.markdown("*Web App for tracking straddle premiums for FnO stocks / Major Indexes on NSE*")
+st.title("📱 Options Selling App")
+st.markdown("*Web App for tracking straddle premiums/Option Chain for FnO stocks / Major Indexes on NSE*")
 
 # Sidebar for settings
 with st.sidebar:
@@ -804,9 +1247,9 @@ else:
     atm_strike = 650.0
     current_price = 650.0
 
-# Input form for other parameters
+# Enhanced Input form with IVP and recommendations
 with st.form("trading_params", clear_on_submit=False):
-    col1, col2 = st.columns([1, 1])
+    col1, col2, col3 = st.columns([1, 1, 1])
     
     with col1:
         agg_tick = st.selectbox(
@@ -838,15 +1281,37 @@ with st.form("trading_params", clear_on_submit=False):
                 step=1.0,
                 help="Manual strike price (option data unavailable)"
             )
+    
+    with col3:
+        # IVP Input
+        ivp = st.number_input(
+            "📈 IV Percentile [Please paste from Broker Terminal]",
+            value=50,
+            min_value=0,
+            max_value=100,
+            step=5,
+            help="Current Implied Volatility Percentile (0-100). Affects recommendation scoring."
+        )
         
+    # Additional options in a second row
+    col4, col5 = st.columns([1, 1])
+    
+    with col4:
         show_prev_close = st.checkbox(
             "📉 Previous Close Line",
             value=True
         )
+        
+    with col5:
+        show_recommendations = st.checkbox(
+            "📊 Show Recommendations",
+            value=True,
+            help="Display option selling recommendations table"
+        )
     
     # Generate button
     submitted = st.form_submit_button(
-        "🚀 Generate Live Chart",
+        "🚀 Generate Chart & Recommendations",
         use_container_width=True
     )
 
@@ -858,27 +1323,113 @@ if submitted:
         current_ticker = st.session_state.get('current_ticker', ticker)
         current_option_data = st.session_state.get('current_option_data', option_data)
         
+        # Calculate Days to Expiry (DTE)
+        dte = 30  # Default fallback
+        if current_option_data and 'expiry' in current_option_data:
+            try:
+                expiry_date = datetime.strptime(current_option_data['expiry'], '%Y-%m-%d').date()
+                current_date = datetime.now().date()
+                dte = max(1, (expiry_date - current_date).days + 1)  # Add 1 as instructed
+                st.info(f"📅 Days to Expiry: {dte} | IV Percentile: {ivp}% | Environment: {'HIGH' if ivp >= 60 else 'MODERATE' if ivp >= 40 else 'LOW'}")
+                
+                # Store IVP in session state for full table access
+                st.session_state['current_ivp'] = ivp
+            except:
+                st.warning("⚠️ Could not calculate DTE, using default value of 30 days")
+        
         # Initialize client
         dhan_client = init_dhan_client()
         
         try:
-            # Always try to get real data first
+            # Generate chart data
+            df_data = None
             if dhan_client:
                 df_data = get_real_options_data(current_ticker, ltp, agg_tick, dhan_client)
                 if df_data is None:
-                    st.error("❌ Could not fetch data. Please check your inputs and try again.")
-                    st.stop()
+                    st.error("❌ Could not fetch chart data. Please check your inputs and try again.")
             else:
                 st.error("❌ Dhan client not initialized. Please check your API credentials.")
-                st.stop()
             
-            # Create static chart instead of plotly chart
-            fig = create_static_chart(df_data, current_ticker, ltp, show_prev_close, show_emas)
-            st.pyplot(fig)
+            # Create two columns for chart and quick recommendations
+            if show_recommendations and current_option_data and 'option_chain' in current_option_data:
+                # Show both chart and recommendations
+                chart_col, rec_col = st.columns([3, 2])
+                
+                with chart_col:
+                    st.subheader("📈 Straddle Premium Chart")
+                    if df_data is not None:
+                        fig = create_static_chart(df_data, current_ticker, ltp, show_prev_close, show_emas)
+                        st.pyplot(fig)
+                    else:
+                        st.warning("Chart data not available")
+                
+                with rec_col:
+                    # Generate recommendations using option chain data
+                    with st.spinner("🔄 Calculating recommendations..."):
+                        enhanced_df = process_option_chain_for_recommendations(
+                            current_option_data['option_chain'], 
+                            current_option_data['current_price'], 
+                            ivp, 
+                            dte
+                        )
+                        
+                        if enhanced_df is not None and not enhanced_df.empty:
+                            # Display compact recommendations for mobile
+                            st.subheader("📊 Quick Recommendations")
+                            
+                            # Show top 3 calls and puts
+                            calls_df = enhanced_df[enhanced_df['type'] == 'CE'].copy()
+                            puts_df = enhanced_df[enhanced_df['type'] == 'PE'].copy()
+                            
+                            # Filter for good recommendations
+                            safe_calls = calls_df[
+                                (calls_df['recommendation'].isin(['STRONG_SELL', 'SELL'])) & 
+                                (calls_df['delta'].abs() <= 0.5)
+                            ].head(3)
+                            safe_puts = puts_df[
+                                (puts_df['recommendation'].isin(['STRONG_SELL', 'SELL'])) & 
+                                (puts_df['delta'].abs() <= 0.5)
+                            ].head(3)
+                            good_calls = safe_calls
+                            good_puts = safe_puts
+                            
+                            st.markdown("**🔥 Top Call Sells:**")
+                            if not good_calls.empty:
+                                for _, row in good_calls.iterrows():
+                                    color = "🟢" if row['recommendation'] == 'STRONG_SELL' else "🔵"
+                                    st.markdown(f"{color} {int(row['strike'])} CE: ₹{row['last_price']:.1f} | θ/Δ: {row['theta_delta_ratio']:.1f} | Score: {row['selling_score']:.0f}")
+                            else:
+                                st.info("No strong call selling opportunities")
+                            
+                            st.markdown("**🔥 Top Put Sells:**")
+                            if not good_puts.empty:
+                                for _, row in good_puts.iterrows():
+                                    color = "🟢" if row['recommendation'] == 'STRONG_SELL' else "🔵"
+                                    st.markdown(f"{color} {int(row['strike'])} PE: ₹{row['last_price']:.1f} | θ/Δ: {row['theta_delta_ratio']:.1f} | Score: {row['selling_score']:.0f}")
+                            else:
+                                st.info("No strong put selling opportunities")
+                        else:
+                            st.warning("⚠️ Could not generate recommendations")
+                
+                # Display full enhanced option chain table below the chart
+                st.markdown("---")
+                if enhanced_df is not None and not enhanced_df.empty:
+                    display_recommendations_table(enhanced_df, current_option_data['current_price'])
+            
+            else:
+                # Show only chart (original behavior)
+                st.subheader("📈 Straddle Premium Chart")
+                if df_data is not None:
+                    fig = create_static_chart(df_data, current_ticker, ltp, show_prev_close, show_emas)
+                    st.pyplot(fig)
+                else:
+                    st.warning("Chart data not available")
             
         except Exception as e:
             st.error(f"❌ Error: {str(e)}")
             st.error("Please check your inputs and try again.")
+
+
 
 
 
