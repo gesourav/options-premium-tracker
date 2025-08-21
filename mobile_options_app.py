@@ -21,13 +21,16 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Configure for mobile
-st.set_page_config(
-    page_title="Options Premium Tracker",
-    page_icon="📱",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+# Health check for Streamlit Cloud
+try:
+    st.set_page_config(
+        page_title="Options Premium Tracker",
+        page_icon="📱",
+        layout="wide",
+        initial_sidebar_state="collapsed"
+    )
+except Exception as e:
+    st.error(f"App initialization error: {e}")
 
 # Mobile CSS - Fixed for Streamlit Cloud deployment
 st.markdown("""
@@ -547,9 +550,15 @@ def fetch_ticker_secid(ticker):
         if ticker in INDEX_SYMBOLS:
             return get_index_security_id(ticker)
 
-        # For stocks, use existing logic
+        # For stocks, use existing logic with error handling
         exchange, segment = "NSE", "EQUITY"
-        all_mstr = pd.read_csv("https://images.dhan.co/api-data/api-scrip-master.csv")
+        
+        try:
+            all_mstr = pd.read_csv("https://images.dhan.co/api-data/api-scrip-master.csv", low_memory=False)
+        except Exception as e:
+            st.error(f"Failed to download master data: {e}")
+            return None
+            
         filter_df = all_mstr[
             (all_mstr["SEM_TRADING_SYMBOL"] == ticker) &
             (all_mstr["SEM_EXM_EXCH_ID"] == exchange) &
@@ -566,13 +575,17 @@ def fetch_ticker_secid(ticker):
 def get_next_expiry(ticker):
     """Get the next Thursday expiry for options"""
     try:
-        # Read from Kite instruments file
-        all_mstr_expiry = pd.read_csv("https://api.kite.trade/instruments")
-        
+        # Read from Kite instruments file with error handling
+        try:
+            all_mstr_expiry = pd.read_csv("https://api.kite.trade/instruments", low_memory=False)
+        except Exception as e:
+            st.error(f"Failed to download expiry data: {e}")
+            return None
+            
         findExpirydf = all_mstr_expiry[
             (all_mstr_expiry.exchange == "NFO") &
             (all_mstr_expiry.name == ticker) &
-            (all_mstr_expiry.segment == "NFO-OPT")  # Changed from instrument_type == "FUT"
+            (all_mstr_expiry.segment == "NFO-OPT")
         ].reset_index(drop=True)
         
         if findExpirydf.empty:
