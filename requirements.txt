@@ -9,3 +9,6 @@ nsepython>=2.97
 requests>=2.31.0
 matplotlib>=3.8.0
 mplfinance>=0.12.10b0
+pycryptodome
+pyotp
+sourcedefender

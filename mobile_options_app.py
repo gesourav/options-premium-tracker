@@ -18,6 +18,9 @@ import pytz
 from dhanhq import dhanhq
 from dotenv import load_dotenv
 
+import sourcedefender
+from dhan_token_automate import GetAccessToken
+
 # Load environment variables
 load_dotenv()
 
@@ -601,9 +604,19 @@ def get_real_option_chain_data(ticker, _dhan_client):
             st.error(f"❌ Could not find expiry for {ticker}")
             return None
             
-        # Get API credentials
-        access_token = st.secrets.get("DHAN_API") if hasattr(st, 'secrets') else os.getenv("DHAN_API")
+        # Get API credentials        
         client_id = st.secrets.get("DHAN_CLIENTID") if hasattr(st, 'secrets') else os.getenv("DHAN_CLIENTID")
+        api_key = st.secrets.get("DHAN_API_KEY") if hasattr(st, 'secrets') else os.getenv("DHAN_API_KEY")
+        api_secret = st.secrets.get("DHAN_API_SECRET") if hasattr(st, 'secrets') else os.getenv("DHAN_API_SECRET")
+        totp_key = st.secrets.get("DHAN_TOTP_KEY") if hasattr(st, 'secrets') else os.getenv("DHAN_TOTP_KEY")
+        pin = st.secrets.get("DHAN_USER_PIN") if hasattr(st, 'secrets') else os.getenv("DHAN_USER_PIN")
+        mobile = st.secrets.get("DHAN_MOBILE_NO") if hasattr(st, 'secrets') else os.getenv("DHAN_MOBILE_NO")
+
+        @st.cache_data(ttl=300*60)
+        def get_access_token():
+            return GetAccessToken(mobile, client_id, api_key, api_secret, totp_key, pin)
+
+        access_token = get_access_token()
         
         if not access_token or not client_id:
             st.error("❌ API credentials missing")
@@ -727,16 +740,27 @@ def init_dhan_client():
         # Try Streamlit secrets first
         try:
             if hasattr(st, 'secrets'):
-                dhan_api = st.secrets.get("DHAN_API")
+
                 client_id = st.secrets.get("DHAN_CLIENTID")
+                api_key = st.secrets.get("DHAN_API_KEY")
+                api_secret = st.secrets.get("DHAN_API_SECRET")
+                totp_key = st.secrets.get("DHAN_TOTP_KEY")
+                pin = st.secrets.get("DHAN_USER_PIN")
+                mobile = st.secrets.get("DHAN_MOBILE_NO")
+
+                @st.cache_data(ttl=300*60)
+                def get_access_token():
+                    return GetAccessToken(mobile, client_id, api_key, api_secret, totp_key, pin)
+
+                dhan_api = get_access_token()
         except Exception:
             pass
         
         # Fallback to environment variables
-        if not dhan_api:
-            dhan_api = os.getenv("DHAN_API")
         if not client_id:
             client_id = os.getenv("DHAN_CLIENTID")
+        if not dhan_api:
+            dhan_api = get_access_token()
         
         # Check if credentials are placeholder values
         if dhan_api and dhan_api != "your_dhan_api_key_here" and client_id and client_id != "your_dhan_client_id_here":
