@@ -24,6 +24,35 @@ from dhan_token_automate import GetAccessToken
 # Load environment variables
 load_dotenv()
 
+# === ACCESS TOKEN CACHING (MOVED TO MODULE LEVEL) ===
+@st.cache_data(ttl=300*60)  # Cache for 5 hours
+def get_cached_access_token():
+    """Get and cache Dhan access token"""
+    try:
+        # Try Streamlit secrets first
+        if hasattr(st, 'secrets'):
+            mobile = st.secrets.get("DHAN_MOBILE_NO")
+            client_id = st.secrets.get("DHAN_CLIENTID")
+            api_key = st.secrets.get("DHAN_API_KEY")
+            api_secret = st.secrets.get("DHAN_API_SECRET")
+            totp_key = st.secrets.get("DHAN_TOTP_KEY")
+            pin = st.secrets.get("DHAN_USER_PIN")
+        else:
+            # Fallback to environment variables
+            mobile = os.getenv("DHAN_MOBILE_NO")
+            client_id = os.getenv("DHAN_CLIENTID")
+            api_key = os.getenv("DHAN_API_KEY")
+            api_secret = os.getenv("DHAN_API_SECRET")
+            totp_key = os.getenv("DHAN_TOTP_KEY")
+            pin = os.getenv("DHAN_USER_PIN")
+        
+        if all([mobile, client_id, api_key, api_secret, totp_key, pin]):
+            return GetAccessToken(mobile, client_id, api_key, api_secret, totp_key, pin)
+        return None
+    except Exception as e:
+        st.error(f"Error getting access token: {e}")
+        return None
+
 # Configure for mobile
 st.set_page_config(
     page_title="Options Premium Tracker",
@@ -604,19 +633,9 @@ def get_real_option_chain_data(ticker, _dhan_client):
             st.error(f"❌ Could not find expiry for {ticker}")
             return None
             
-        # Get API credentials        
+        # Get API credentials using cached function
+        access_token = get_cached_access_token()
         client_id = st.secrets.get("DHAN_CLIENTID") if hasattr(st, 'secrets') else os.getenv("DHAN_CLIENTID")
-        api_key = st.secrets.get("DHAN_API_KEY") if hasattr(st, 'secrets') else os.getenv("DHAN_API_KEY")
-        api_secret = st.secrets.get("DHAN_API_SECRET") if hasattr(st, 'secrets') else os.getenv("DHAN_API_SECRET")
-        totp_key = st.secrets.get("DHAN_TOTP_KEY") if hasattr(st, 'secrets') else os.getenv("DHAN_TOTP_KEY")
-        pin = st.secrets.get("DHAN_USER_PIN") if hasattr(st, 'secrets') else os.getenv("DHAN_USER_PIN")
-        mobile = st.secrets.get("DHAN_MOBILE_NO") if hasattr(st, 'secrets') else os.getenv("DHAN_MOBILE_NO")
-
-        @st.cache_data(ttl=300*60)
-        def get_access_token():
-            return GetAccessToken(mobile, client_id, api_key, api_secret, totp_key, pin)
-
-        access_token = get_access_token()
         
         if not access_token or not client_id:
             st.error("❌ API credentials missing")
@@ -734,38 +753,21 @@ def get_nearby_strikes(strikes, atm_strike, count=10):
 def init_dhan_client():
     """Initialize Dhan client for production"""
     try:
-        dhan_api = None
+        # Get cached access token
+        dhan_api = get_cached_access_token()
+        
+        # Get client ID
         client_id = None
-        
-        # Try Streamlit secrets first
-        try:
-            if hasattr(st, 'secrets'):
-
-                client_id = st.secrets.get("DHAN_CLIENTID")
-                api_key = st.secrets.get("DHAN_API_KEY")
-                api_secret = st.secrets.get("DHAN_API_SECRET")
-                totp_key = st.secrets.get("DHAN_TOTP_KEY")
-                pin = st.secrets.get("DHAN_USER_PIN")
-                mobile = st.secrets.get("DHAN_MOBILE_NO")
-
-                @st.cache_data(ttl=300*60)
-                def get_access_token():
-                    return GetAccessToken(mobile, client_id, api_key, api_secret, totp_key, pin)
-
-                dhan_api = get_access_token()
-        except Exception:
-            pass
-        
-        # Fallback to environment variables
-        if not client_id:
+        if hasattr(st, 'secrets'):
+            client_id = st.secrets.get("DHAN_CLIENTID")
+        else:
             client_id = os.getenv("DHAN_CLIENTID")
-        if not dhan_api:
-            dhan_api = get_access_token()
         
-        # Check if credentials are placeholder values
+        # Check if credentials are valid
         if dhan_api and dhan_api != "your_dhan_api_key_here" and client_id and client_id != "your_dhan_client_id_here":
             return dhanhq(client_id, dhan_api)
         else:
+            st.warning("⚠️ Dhan API credentials not configured properly")
             return None
     except Exception as e:
         st.error(f"Failed to connect to Dhan API: {e}")
@@ -862,10 +864,21 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
                     raise e
             
             if not livefeed.get("data"):
+                st.warning(f"⚠️ No intraday data returned for security ID {secid}")
+                continue
+            
+            # Validate data structure
+            if not isinstance(livefeed["data"], list) or len(livefeed["data"]) == 0:
+                st.warning(f"⚠️ Empty or invalid data structure for security ID {secid}")
                 continue
                 
             # Process data
             df = pd.DataFrame(livefeed["data"])
+            
+            # Validate DataFrame is not empty
+            if df.empty:
+                st.warning(f"⚠️ DataFrame is empty for security ID {secid}")
+                continue
             
             # Handle timestamp conversion - try different field names
             timestamp_field = None
@@ -918,6 +931,20 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
         
         if df_ce is None or df_pe is None:
             st.error(f"❌ Could not get both CE and PE data for {ticker}")
+            return None
+        
+        # Validate dataframes are not empty
+        if df_ce.empty or df_pe.empty:
+            st.error(f"❌ One or both option dataframes are empty for {ticker}")
+            return None
+        
+        # Validate required columns exist
+        required_cols = ["Timestamp", "open", "high", "low", "close", "volume"]
+        if not all(col in df_ce.columns for col in required_cols):
+            st.error(f"❌ CE data missing required columns. Available: {df_ce.columns.tolist()}")
+            return None
+        if not all(col in df_pe.columns for col in required_cols):
+            st.error(f"❌ PE data missing required columns. Available: {df_pe.columns.tolist()}")
             return None
         
         # EXACT notebook combination logic
