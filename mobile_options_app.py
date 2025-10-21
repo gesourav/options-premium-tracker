@@ -581,6 +581,44 @@ def fetch_ticker_secid(ticker):
         st.error(f"Error fetching security ID for {ticker}: {e}")
         return None
 
+def get_dhan_option_security_ids(ticker, strike, expiry):
+    """Get Dhan security IDs for CE and PE options"""
+    try:
+        # Read Dhan master file
+        dhan_master = pd.read_csv("https://images.dhan.co/api-data/api-scrip-master.csv")
+        
+        # Convert expiry to match Dhan format (DD-MMM-YYYY like 28-Oct-2025)
+        expiry_date = datetime.strptime(expiry, "%Y-%m-%d")
+        dhan_expiry = expiry_date.strftime("%d-%b-%Y")
+        
+        # Find CE and PE options
+        ce_filter = dhan_master[
+            (dhan_master["SEM_TRADING_SYMBOL"] == ticker) &
+            (dhan_master["SEM_EXPIRY_DATE"] == dhan_expiry) &
+            (dhan_master["SEM_STRIKE_PRICE"] == strike) &
+            (dhan_master["SEM_OPTION_TYPE"] == "CE")
+        ]
+        
+        pe_filter = dhan_master[
+            (dhan_master["SEM_TRADING_SYMBOL"] == ticker) &
+            (dhan_master["SEM_EXPIRY_DATE"] == dhan_expiry) &
+            (dhan_master["SEM_STRIKE_PRICE"] == strike) &
+            (dhan_master["SEM_OPTION_TYPE"] == "PE")
+        ]
+        
+        if ce_filter.empty or pe_filter.empty:
+            st.warning(f"⚠️ Could not find Dhan security IDs for {ticker} {strike} expiry {dhan_expiry}")
+            return None, None
+        
+        ce_secid = int(ce_filter.iloc[0]["SEM_SMST_SECURITY_ID"])
+        pe_secid = int(pe_filter.iloc[0]["SEM_SMST_SECURITY_ID"])
+        
+        return ce_secid, pe_secid
+        
+    except Exception as e:
+        st.error(f"Error getting Dhan option security IDs: {e}")
+        return None, None
+
 def get_next_expiry(ticker):
     """Get the next Thursday expiry for options"""
     try:
@@ -784,50 +822,21 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
         INDEX_SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
         is_index = ticker in INDEX_SYMBOLS
             
-        # EXACT notebook logic - use Kite instruments file
-        all_mstr_expiry = pd.read_csv("https://api.kite.trade/instruments")
-        
-        findExpirydf = all_mstr_expiry[
-            (all_mstr_expiry.exchange == "NFO")
-            & (all_mstr_expiry.name == ticker)
-            & (all_mstr_expiry.segment == "NFO-OPT")
-        ]
-        
-        # Find CE and PE instruments for the strike
-        if findExpirydf.empty:
-            st.error(f"❌ No options data found for {ticker} in NFO segment")
+        # Get next expiry for the ticker
+        expiry = get_next_expiry(ticker)
+        if not expiry:
+            st.error(f"❌ Could not find expiry for {ticker}")
             return None
         
-        # Get available strikes around the requested strike
-        nearest_expiry = findExpirydf["expiry"].min()
-        available_strikes = sorted(findExpirydf[findExpirydf["expiry"] == nearest_expiry]["strike"].unique())
+        # Use Dhan master file to get proper security IDs
+        ce_secid, pe_secid = get_dhan_option_security_ids(ticker, ltp, expiry)
         
-        # Use wider range for indices
-        strike_range = 500 if is_index else 200
-        nearby_strikes = [s for s in available_strikes if abs(s - ltp) <= strike_range]
+        if not ce_secid or not pe_secid:
+            st.error(f"❌ Could not find Dhan security IDs for {ticker} strike {ltp}")
+            return None
         
-        instruments = findExpirydf[
-            (findExpirydf["expiry"] == nearest_expiry)
-            & (findExpirydf["strike"] == ltp)
-        ]["exchange_token"].values.tolist()
-        
-        if len(instruments) != 2:
-            # Try to find the closest available strike
-            if nearby_strikes:
-                closest_strike = min(nearby_strikes, key=lambda x: abs(x - ltp))
-                instruments = findExpirydf[
-                    (findExpirydf["expiry"] == nearest_expiry)
-                    & (findExpirydf["strike"] == closest_strike)
-                ]["exchange_token"].values.tolist()
-                
-                if len(instruments) == 2:
-                    ltp = closest_strike  # Update the strike price
-                else:
-                    st.error(f"❌ Could not find both CE and PE instruments for {ticker}")
-                    return None
-            else:
-                st.error(f"❌ No nearby strikes found for {ticker}")
-                return None
+        instruments = [ce_secid, pe_secid]
+        st.info(f"✓ Found Dhan security IDs - CE: {ce_secid}, PE: {pe_secid}")
         
         # Get current and previous trading day (same as notebook)
         today = datetime.now().date()
@@ -842,8 +851,14 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
         df_ce = None
         df_pe = None
         
-        for secid in instruments:
-            # Get intraday data - try with date range first, fallback to current day
+        # Debug: Show which instruments we're trying to fetch
+        st.info(f"🔍 Fetching data for instruments: {instruments}")
+        
+        for idx, secid in enumerate(instruments):
+            # Get intraday data - try multiple approaches
+            livefeed = None
+            
+            # Approach 1: Try with date range
             try:
                 livefeed = _dhan_client.intraday_minute_data(
                     security_id=str(secid),
@@ -852,24 +867,39 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
                     from_date=from_date,
                     to_date=to_date
                 )
+                st.info(f"✓ Got data for security {secid} with date range")
             except TypeError as e:
                 if "unexpected keyword argument" in str(e):
-                    # Fallback to API without date parameters (gets current day data)
-                    livefeed = _dhan_client.intraday_minute_data(
-                        security_id=str(secid),
-                        exchange_segment="NSE_FNO",
-                        instrument_type="OPTIDX" if is_index else "OPTSTK"
-                    )
+                    # Approach 2: Fallback to API without date parameters
+                    try:
+                        livefeed = _dhan_client.intraday_minute_data(
+                            security_id=str(secid),
+                            exchange_segment="NSE_FNO",
+                            instrument_type="OPTIDX" if is_index else "OPTSTK"
+                        )
+                        st.info(f"✓ Got data for security {secid} without date params")
+                    except Exception as e2:
+                        st.error(f"❌ Failed to fetch data for {secid}: {str(e2)}")
+                        continue
                 else:
-                    raise e
+                    st.error(f"❌ TypeError for security {secid}: {str(e)}")
+                    continue
+            except Exception as e:
+                st.error(f"❌ Error fetching data for security {secid}: {str(e)}")
+                continue
+            
+            # Debug: Show API response structure
+            st.info(f"📊 API Response for {secid}: {type(livefeed)} - Keys: {livefeed.keys() if isinstance(livefeed, dict) else 'Not a dict'}")
             
             if not livefeed.get("data"):
-                st.warning(f"⚠️ No intraday data returned for security ID {secid}")
+                st.warning(f"⚠️ No 'data' key in response for security ID {secid}")
+                st.warning(f"Full response: {livefeed}")
                 continue
             
             # Validate data structure
             if not isinstance(livefeed["data"], list) or len(livefeed["data"]) == 0:
                 st.warning(f"⚠️ Empty or invalid data structure for security ID {secid}")
+                st.warning(f"Data type: {type(livefeed['data'])}, Length: {len(livefeed['data']) if isinstance(livefeed['data'], list) else 'N/A'}")
                 continue
                 
             # Process data
@@ -922,12 +952,13 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
                 df['volume'] = 0
             df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0)
             
-            # Determine if CE or PE based on exchange_token
-            instrument_info = findExpirydf[findExpirydf["exchange_token"] == secid].iloc[0]
-            if "CE" in instrument_info["tradingsymbol"]:
+            # Determine if CE or PE based on order (first is CE, second is PE)
+            if idx == 0:
                 df_ce = df.copy()
-            elif "PE" in instrument_info["tradingsymbol"]:
+                st.info(f"✓ Loaded CE data: {len(df)} rows")
+            else:
                 df_pe = df.copy()
+                st.info(f"✓ Loaded PE data: {len(df)} rows")
         
         if df_ce is None or df_pe is None:
             st.error(f"❌ Could not get both CE and PE data for {ticker}")
