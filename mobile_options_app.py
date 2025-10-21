@@ -919,18 +919,28 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
             st.info(f"📊 Data Type: {type(data_content)}")
             st.info(f"📊 Data Length: {len(data_content) if isinstance(data_content, (list, dict)) else 'N/A'}")
             
-            if isinstance(data_content, list) and len(data_content) > 0:
+            # Handle both list of dicts and dict of lists formats
+            if isinstance(data_content, list):
+                if len(data_content) == 0:
+                    st.error(f"❌ Empty list data for security ID {secid}")
+                    continue
                 st.info(f"📊 First data item: {data_content[0]}")
-            
-            if not isinstance(data_content, list) or len(data_content) == 0:
-                st.error(f"❌ Invalid data structure for security ID {secid}")
-                st.error(f"Data is: {type(data_content)} with length: {len(data_content) if hasattr(data_content, '__len__') else 'N/A'}")
-                if isinstance(data_content, dict):
-                    st.error(f"Data content keys: {list(data_content.keys())}")
+                df = pd.DataFrame(data_content)
+            elif isinstance(data_content, dict):
+                # Check if it's columnar format (dict of lists)
+                if all(isinstance(v, list) for v in data_content.values()):
+                    st.success(f"✓ Data in columnar format (dict of lists)")
+                    st.info(f"📊 Data columns: {list(data_content.keys())}")
+                    st.info(f"📊 First values: {[v[0] if len(v) > 0 else None for v in data_content.values()]}")
+                    df = pd.DataFrame(data_content)
+                else:
+                    st.error(f"❌ Invalid dict structure for security ID {secid}")
+                    st.error(f"Dict keys: {list(data_content.keys())}")
+                    st.error(f"Value types: {[type(v) for v in data_content.values()]}")
+                    continue
+            else:
+                st.error(f"❌ Invalid data type for security ID {secid}: {type(data_content)}")
                 continue
-                
-            # Process data
-            df = pd.DataFrame(livefeed["data"])
             
             st.success(f"✓ DataFrame created with {len(df)} rows")
             st.info(f"📊 DataFrame columns: {df.columns.tolist()}")
