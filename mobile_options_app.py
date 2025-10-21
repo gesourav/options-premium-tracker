@@ -815,22 +815,31 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
             & (findExpirydf["strike"] == ltp)
         ]["exchange_token"].values.tolist()
         
+        st.info(f"🔍 Found {len(instruments)} instruments for strike {ltp}: {instruments}")
+        
         if len(instruments) != 2:
+            st.warning(f"⚠️ Strike {ltp} doesn't have both CE and PE. Looking for closest strike...")
             # Try to find the closest available strike
             if nearby_strikes:
                 closest_strike = min(nearby_strikes, key=lambda x: abs(x - ltp))
+                st.info(f"🔍 Trying closest strike: {closest_strike}")
                 instruments = findExpirydf[
                     (findExpirydf["expiry"] == nearest_expiry)
                     & (findExpirydf["strike"] == closest_strike)
                 ]["exchange_token"].values.tolist()
                 
+                st.info(f"🔍 Found {len(instruments)} instruments for closest strike {closest_strike}: {instruments}")
+                
                 if len(instruments) == 2:
                     ltp = closest_strike  # Update the strike price
+                    st.success(f"✓ Using strike {ltp} instead")
                 else:
                     st.error(f"❌ Could not find both CE and PE instruments for {ticker}")
+                    st.error(f"Nearby strikes: {nearby_strikes[:10]}")
                     return None
             else:
                 st.error(f"❌ No nearby strikes found for {ticker}")
+                st.error(f"Available strikes: {available_strikes[:10]}")
                 return None
         
         # Get current and previous trading day (same as notebook)
@@ -848,6 +857,13 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
         
         for secid in instruments:
             # Get intraday data - try with date range first, fallback to current day
+            st.info(f"🔍 Attempting to fetch data for security ID: {secid}")
+            st.info(f"📅 Date range: {from_date} to {to_date}")
+            st.info(f"🏢 Exchange: NSE_FNO, Type: {'OPTIDX' if is_index else 'OPTSTK'}")
+            
+            livefeed = None
+            api_error = None
+            
             try:
                 livefeed = _dhan_client.intraday_minute_data(
                     security_id=str(secid),
@@ -856,32 +872,75 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
                     from_date=from_date,
                     to_date=to_date
                 )
+                st.success(f"✓ API call successful for security {secid}")
             except TypeError as e:
                 if "unexpected keyword argument" in str(e):
                     # Fallback to API without date parameters (gets current day data)
-                    livefeed = _dhan_client.intraday_minute_data(
-                        security_id=str(secid),
-                        exchange_segment="NSE_FNO",
-                        instrument_type="OPTIDX" if is_index else "OPTSTK"
-                    )
+                    st.info(f"⚠️ Retrying without date parameters...")
+                    try:
+                        livefeed = _dhan_client.intraday_minute_data(
+                            security_id=str(secid),
+                            exchange_segment="NSE_FNO",
+                            instrument_type="OPTIDX" if is_index else "OPTSTK"
+                        )
+                        st.success(f"✓ API call successful (no date params) for security {secid}")
+                    except Exception as e2:
+                        api_error = str(e2)
+                        st.error(f"❌ API Error (no date params): {api_error}")
+                        continue
                 else:
-                    raise e
-            
-            if not livefeed.get("data"):
-                st.warning(f"⚠️ No intraday data returned for security ID {secid}")
+                    api_error = str(e)
+                    st.error(f"❌ TypeError: {api_error}")
+                    continue
+            except Exception as e:
+                api_error = str(e)
+                st.error(f"❌ API Exception: {api_error}")
                 continue
             
-            # Validate data structure
-            if not isinstance(livefeed["data"], list) or len(livefeed["data"]) == 0:
-                st.warning(f"⚠️ Empty or invalid data structure for security ID {secid}")
+            # Show the full API response structure
+            st.info(f"📊 API Response Type: {type(livefeed)}")
+            if isinstance(livefeed, dict):
+                st.info(f"📊 API Response Keys: {list(livefeed.keys())}")
+                st.info(f"📊 Full API Response: {livefeed}")
+            else:
+                st.warning(f"⚠️ API Response is not a dict: {livefeed}")
+            
+            if not livefeed:
+                st.error(f"❌ No response from API for security ID {secid}")
+                continue
+            
+            if not livefeed.get("data"):
+                st.error(f"❌ No 'data' key in response for security ID {secid}")
+                st.error(f"Available keys: {list(livefeed.keys()) if isinstance(livefeed, dict) else 'Not a dict'}")
+                continue
+            
+            # Validate data structure with detailed info
+            data_content = livefeed["data"]
+            st.info(f"📊 Data Type: {type(data_content)}")
+            st.info(f"📊 Data Length: {len(data_content) if isinstance(data_content, (list, dict)) else 'N/A'}")
+            
+            if isinstance(data_content, list) and len(data_content) > 0:
+                st.info(f"📊 First data item: {data_content[0]}")
+            
+            if not isinstance(data_content, list) or len(data_content) == 0:
+                st.error(f"❌ Invalid data structure for security ID {secid}")
+                st.error(f"Data is: {type(data_content)} with length: {len(data_content) if hasattr(data_content, '__len__') else 'N/A'}")
+                if isinstance(data_content, dict):
+                    st.error(f"Data content keys: {list(data_content.keys())}")
                 continue
                 
             # Process data
             df = pd.DataFrame(livefeed["data"])
             
+            st.success(f"✓ DataFrame created with {len(df)} rows")
+            st.info(f"📊 DataFrame columns: {df.columns.tolist()}")
+            st.info(f"📊 DataFrame shape: {df.shape}")
+            if len(df) > 0:
+                st.info(f"📊 First row: {df.iloc[0].to_dict()}")
+            
             # Validate DataFrame is not empty
             if df.empty:
-                st.warning(f"⚠️ DataFrame is empty for security ID {secid}")
+                st.error(f"❌ DataFrame is empty for security ID {secid}")
                 continue
             
             # Handle timestamp conversion - try different field names
@@ -892,6 +951,7 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
                 timestamp_field = "timestamp"
             else:
                 st.error(f"❌ No timestamp field found. Available columns: {df.columns.tolist()}")
+                st.error(f"Sample data: {df.head(2).to_dict()}")
                 continue
             
             # Convert timestamps
@@ -927,11 +987,26 @@ def get_real_options_data(ticker, ltp, agg_tick, _dhan_client):
             df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0)
             
             # Determine if CE or PE based on exchange_token
-            instrument_info = findExpirydf[findExpirydf["exchange_token"] == secid].iloc[0]
-            if "CE" in instrument_info["tradingsymbol"]:
+            st.info(f"🔍 Looking up instrument info for exchange_token: {secid}")
+            instrument_matches = findExpirydf[findExpirydf["exchange_token"] == secid]
+            
+            if instrument_matches.empty:
+                st.error(f"❌ No instrument found with exchange_token {secid}")
+                st.error(f"Available exchange_tokens: {findExpirydf['exchange_token'].unique()[:10]}")
+                continue
+            
+            instrument_info = instrument_matches.iloc[0]
+            trading_symbol = instrument_info["tradingsymbol"]
+            st.info(f"📊 Trading Symbol: {trading_symbol}")
+            
+            if "CE" in trading_symbol:
                 df_ce = df.copy()
-            elif "PE" in instrument_info["tradingsymbol"]:
+                st.success(f"✓ Loaded CE data: {len(df)} rows for {trading_symbol}")
+            elif "PE" in trading_symbol:
                 df_pe = df.copy()
+                st.success(f"✓ Loaded PE data: {len(df)} rows for {trading_symbol}")
+            else:
+                st.error(f"❌ Could not determine if CE or PE from symbol: {trading_symbol}")
         
         if df_ce is None or df_pe is None:
             st.error(f"❌ Could not get both CE and PE data for {ticker}")
