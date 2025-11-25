@@ -27,10 +27,12 @@ load_dotenv()
 # === ACCESS TOKEN CACHING (MOVED TO MODULE LEVEL) ===
 @st.cache_data(ttl=300*60)  # Cache for 5 hours
 def get_cached_access_token():
-    """Get and cache Dhan access token"""
+    """Get and cache Dhan access token with fallback to stored token"""
     try:
-        # Try Streamlit secrets first
+        # First, try to read DHAN_TMP_ACCESS from secrets/env (fallback token)
+        fallback_token = None
         if hasattr(st, 'secrets'):
+            fallback_token = st.secrets.get("DHAN_TMP_ACCESS")
             mobile = st.secrets.get("DHAN_MOBILE_NO")
             client_id = st.secrets.get("DHAN_CLIENTID")
             api_key = st.secrets.get("DHAN_API_KEY")
@@ -38,7 +40,7 @@ def get_cached_access_token():
             totp_key = st.secrets.get("DHAN_TOTP_KEY")
             pin = st.secrets.get("DHAN_USER_PIN")
         else:
-            # Fallback to environment variables
+            fallback_token = os.getenv("DHAN_TMP_ACCESS")
             mobile = os.getenv("DHAN_MOBILE_NO")
             client_id = os.getenv("DHAN_CLIENTID")
             api_key = os.getenv("DHAN_API_KEY")
@@ -46,11 +48,35 @@ def get_cached_access_token():
             totp_key = os.getenv("DHAN_TOTP_KEY")
             pin = os.getenv("DHAN_USER_PIN")
         
+        # Try to generate fresh token if credentials are available
         if all([mobile, client_id, api_key, api_secret, totp_key, pin]):
-            return GetAccessToken(mobile, client_id, api_key, api_secret, totp_key, pin)
+            try:
+                fresh_token = GetAccessToken(mobile, client_id, api_key, api_secret, totp_key, pin)
+                if fresh_token:
+                    st.info("✅ Using freshly generated access token")
+                    return fresh_token
+            except Exception as gen_error:
+                st.warning(f"⚠️ Failed to generate fresh token: {gen_error}. Using fallback token.")
+        
+        # Fallback to stored token if available
+        if fallback_token and fallback_token != "your_temp_access_token_here":
+            st.info("🔄 Using fallback access token from secrets")
+            return fallback_token
+        
+        st.error("❌ No valid access token available. Please configure DHAN_TMP_ACCESS in secrets.")
         return None
+        
     except Exception as e:
         st.error(f"Error getting access token: {e}")
+        # Last resort: try fallback token
+        if hasattr(st, 'secrets'):
+            fallback = st.secrets.get("DHAN_TMP_ACCESS")
+        else:
+            fallback = os.getenv("DHAN_TMP_ACCESS")
+        
+        if fallback:
+            st.warning("⚠️ Using fallback token due to error")
+            return fallback
         return None
 
 # Configure for mobile
