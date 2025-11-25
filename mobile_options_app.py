@@ -56,7 +56,7 @@ def get_cached_access_token():
                     st.info("✅ Using freshly generated access token")
                     return fresh_token
             except Exception as gen_error:
-                st.warning(f"⚠️ Failed to generate fresh token: {gen_error}. Using fallback token.")
+                # st.warning(f"⚠️ Failed to generate fresh token: {gen_error}. Using fallback token.")
         
         # Fallback to stored token if available
         if fallback_token and fallback_token != "your_temp_access_token_here":
