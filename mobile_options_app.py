@@ -19,7 +19,7 @@ from dhanhq import dhanhq
 from dotenv import load_dotenv
 
 # import sourcedefender
-from dhan_token_automate import GetAccessToken
+# from dhan_token_automate import GetAccessToken
 
 # Load environment variables
 load_dotenv()
@@ -51,7 +51,7 @@ def get_cached_access_token():
         # Try to generate fresh token if credentials are available
         if all([mobile, client_id, api_key, api_secret, totp_key, pin]):
             try:
-                fresh_token = GetAccessToken(mobile, client_id, api_key, api_secret, totp_key, pin)
+                # fresh_token = GetAccessToken(mobile, client_id, api_key, api_secret, totp_key, pin)
                 if fresh_token:
                     st.info("✅ Using freshly generated access token")
                     return fresh_token
