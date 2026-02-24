@@ -6,7 +6,6 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta, date
 import os
 from ta.trend import EMAIndicator
-from nsepython import fnolist
 import requests
 import matplotlib.pyplot as plt
 from matplotlib.dates import DateFormatter
@@ -17,12 +16,20 @@ import pytz
 # For production:
 from dhanhq import dhanhq
 from dotenv import load_dotenv
+import ast
+
 
 # import sourcedefender
 # from dhan_token_automate import GetAccessToken
 
 # Load environment variables
 load_dotenv()
+
+
+with open("current_fnolist.txt", "r") as file:
+    fnolist = ast.literal_eval(file.read())
+
+print(len(fnolist))
 
 # === ACCESS TOKEN CACHING (MOVED TO MODULE LEVEL) ===
 @st.cache_data(ttl=60*60)  # Cache for 1 hour
@@ -560,13 +567,13 @@ def display_recommendations_table(enhanced_df, underlying_price):
 def get_fno_stocks():
     """Get list of F&O stocks from NSE"""
     try:
-        fno_stocks = fnolist()
+        fno_stocks = fnolist
         # Sort alphabetically for better user experience
         return sorted(fno_stocks)
     except Exception as e:
         st.error(f"Error fetching F&O list: {e}")
         # Fallback to common stocks if API fails
-        return ["TATAMOTORS", "RELIANCE", "HDFCBANK", "ICICIBANK", "SBIN", "TCS", "INFY", "ITC", "HINDUNILVR", "KOTAKBANK"]
+        return ["HDFCBANK", "ICICIBANK", "SBIN", "TCS", "INFY", "ITC", "HINDUNILVR", "KOTAKBANK"]
 
 def get_index_security_id(ticker):
     """Get hardcoded security IDs for indices from notebook"""
