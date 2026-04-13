@@ -1342,7 +1342,7 @@ with st.form("trading_params", clear_on_submit=False):
     with col1:
         agg_tick = st.selectbox(
             "📊 Timeframe",
-            ["1T", "3T", "5T", "15T"],
+            ["1min", "3min", "5min", "15min"],
             index=1,
             help="Chart aggregation interval"
         )
